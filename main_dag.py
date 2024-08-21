@@ -10,20 +10,38 @@ from airflow.hooks import PostgresHook
 from airflow.utils.dates import days_ago
 
 
-def get_data(**kwargs):
-    offset = kwargs['offset']
-    resource = kwargs['resource']
-    req = requests.get(f"{resource}limit=100&offset={offset}")
+def get_data(resource:str, offset:int, limit:int = 100)->dict:
+    """
+    Функция для получения данных с OpenData.
+    Принимает адресс и условия смещения и ограничения
+
+    :param limit: ограничение на количество записей
+    :param resource: источник
+    :param offset: смещение
+    :return: dict значенией
+    """
+    req = requests.get(f"{resource}limit={limit}&offset={offset}")
     return req.json()['results']['vacancies']
 
 
-def transform_data(data):
+def transform_data(data:list)->dict:
+    """
+    Преобразуем входящий массив данных для дальнейшей работы
+
+    :param data: список значений вернувшихся по API
+    :return: возвращает словарь вида
+        {"table_name":
+            "on_conflict": первичный_ключ_таблицы_при_наличии,
+            "column_name": наименование колонок в PostgresSQL,
+            "values": список значений
+        }
+    """
     company_data = {
         'on_conflict': 'inn',
         'column_name': ['inn', 'name', 'kpp', 'ogrn', 'site', 'email'],
         'values': [
             (
-                element['vacancy']['company'].get('inn'),
+                element['vacancy']['company'].get('inn'), # используем get, что бы отловить ошибку в случае отсутсвия ключа
                 element['vacancy']['company'].get('name'),
                 element['vacancy']['company'].get('kpp'),
                 element['vacancy']['company'].get('ogrn'),
@@ -46,21 +64,19 @@ def transform_data(data):
                 element['vacancy'].get('source'),
                 element['vacancy']['company'].get('inn'),
                 element['vacancy'].get('creation-date'),
-                re.sub(r'[^0-9]*(\d+)[^0-9]*', '\\1', element['vacancy'].get('salary')) if element['vacancy'].get(
-                    'salary') is not None else None,
+                re.sub(r'[^0-9]*(\d+)[^0-9]*', '\\1', element['vacancy'].get('salary')) if element['vacancy'].get('salary') is not None else None, #Если элемент не None ищем число и удаляем всё остальное
                 element['vacancy'].get('salary_min'),
                 element['vacancy'].get('salary_max'),
                 element['vacancy'].get('job-name'),
                 element['vacancy'].get('vac_url'),
                 element['vacancy'].get('employment', 1),
                 element['vacancy'].get('schedule'),
-                re.sub(r'<[^>]+>|\\r|\\n|\\t|&nbsp;', ' ', element['vacancy'].get('duty')) if 'duty' in element[
-                    'vacancy'] else None,
+                re.sub(r'<[^>]+>|\\r|\\n|\\t|&nbsp;', ' ', element['vacancy'].get('duty')) if 'duty' in element['vacancy'] else None, #аналогично, но убираем html-теги в принципе можно убрать проверку подсунув пустую строку в get
                 element['vacancy']['category'].get('specialisation'),
                 element['vacancy']['requirement'].get('education'),
                 element['vacancy']['requirement'].get('experience'),
                 element['vacancy'].get('work_places'),
-                element['vacancy']['addresses']['address'][0].get('location'),
+                element['vacancy']['addresses']['address'][0].get('location'),#нужно дописать парсер адресса, но не сейчас
                 element['vacancy']['addresses']['address'][0].get('lng'),
                 element['vacancy']['addresses']['address'][0].get('lat'),
             )
@@ -70,7 +86,14 @@ def transform_data(data):
     return {'company': company_data, 'vacancy': vacancy_data}
 
 
-def load_data(data):
+def load_data(data:dict)->None:
+    """
+    Загружаем данные в PostgreSQL.
+    В идеале хотел использовать pg_hook.insert_row, но с ним не работает ON CONFLICT
+
+    :param data: dict словарь с таблицами
+    :return: None
+    """
     pg_hook = PostgresHook(postgres_conn_id='ul_db')
     for table_name, table_data in data.items():
         for row in table_data['values']:
