@@ -1,7 +1,5 @@
 import requests
-from urllib.parse import urljoin
 import re
-from pprint import pprint
 
 from airflow.models import Variable
 from airflow import DAG
