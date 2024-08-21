@@ -1,18 +1,24 @@
-import re
-
-import yaml
 import requests
-
-from bs4 import BeautifulSoup
+from urllib.parse import urljoin
+import re
 from pprint import pprint
 
+from airflow.models import Variable
+from airflow import DAG
+from airflow.operators.python_operator import PythonOperator
+from airflow.hooks import PostgresHook
+from airflow.utils.dates import days_ago
+
+
 def get_data(**kwargs):
+    offset = kwargs['offset']
+    resource = kwargs['resource']
     req = requests.get(resource + f'limit=100&offset={offset}')
     data = req.json()['results']['vacancies']
-    with (open('data.yaml', 'a',encoding='utf-8')) as file:
-        yaml.safe_dump(data, file, allow_unicode=True, default_flow_style=False)
-        # json.dump(data,file,ensure_ascii=False)
-        print("done get_data")
+    # with (open('data.yaml', 'a',encoding='utf-8')) as file:
+    #     yaml.safe_dump(data, file, allow_unicode=True, default_flow_style=False)
+    #     # json.dump(data,file,ensure_ascii=False)
+    #     print("done get_data")
     return data
 
 
@@ -20,6 +26,7 @@ def transform_data(**kwargs):
     data = kwargs.get('data', [])
 
     company_data = {
+        'on_conflict': 'inn',
         'column_name': ['inn', 'name', 'kpp', 'ogrn', 'site', 'email'],
         'values': [
             (
@@ -35,9 +42,9 @@ def transform_data(**kwargs):
     }
 
     vacancy_data = {
-        'column_name': ['id', 'source', 'inn_company', 'creation_date', "salary", "salary_min"
-                                                                                  'salary_max', 'job_name', 'vac_url',
-                        'employment', 'schedule', 'duty',
+        'on_conflict': 'id',
+        'column_name': ['id', 'source', 'inn_company', 'creation_date', "salary", "salary_min",
+                        'salary_max', 'job_name', 'vac_url', 'employment', 'schedule', 'duty',
                         'category', 'education', 'experience', 'work_places', 'address', 'lng', 'lat'
                         ],
         'values': [
@@ -46,14 +53,16 @@ def transform_data(**kwargs):
                 element['vacancy'].get('source'),
                 element['vacancy']['company'].get('inn'),
                 element['vacancy'].get('creation-date'),
-                element['vacancy'].get('salary'),
+                re.sub(r'[^0-9]*(\d+)[^0-9]*', '\\1', element['vacancy'].get('salary')) if element['vacancy'].get(
+                    'salary') is not None else None,
                 element['vacancy'].get('salary_min'),
                 element['vacancy'].get('salary_max'),
                 element['vacancy'].get('job-name'),
                 element['vacancy'].get('vac_url'),
                 element['vacancy'].get('employment', 1),
                 element['vacancy'].get('schedule'),
-                element['vacancy'].get('duty'),
+                re.sub(r'<[^>]+>|\\r|\\n|\\t|&nbsp;', ' ', element['vacancy'].get('duty')) if 'duty' in element[
+                    'vacancy'] else None,
                 element['vacancy']['category'].get('specialisation'),
                 element['vacancy']['requirement'].get('education'),
                 element['vacancy']['requirement'].get('experience'),
@@ -66,6 +75,22 @@ def transform_data(**kwargs):
         ]
     }
     return {'company': company_data, 'vacancy': vacancy_data}
+
+
+def load_t_data(**kwargs):
+    pg_hook = PostgresHook(postgres_conn_id='ul_db')
+    data = kwargs.get('data', [])
+    print(data)
+    for _table_name, _data in data.items():
+        # print (table, '\n', data[table]['values'], '\n', data[table]['column_name'])
+        # pg_hook.insert_rows(table='"DC".'+table, rows=data[table]['values'], target_fields=data[table]['column_name'])
+        for row in _data['values']:
+            if _data["on_conflict"]:
+                sql = f'INSERT INTO "DC".{_table_name} ({",".join(_data["column_name"])}) VALUES ({",".join(["%s"] * len(row))}) ON CONFLICT ({_data["on_conflict"]}) DO NOTHING'
+            else:
+                sql = f'INSERT INTO "DC".{_table_name} ({",".join(_data["column_name"])}) VALUES ({",".join(["%s"] * len(row))})'
+            pg_hook.run(sql, parameters=row)
+
 
 def load_data(**kwargs):
     data = kwargs.get('data', [])  # Assuming 'data' is passed as a keyword argument
@@ -85,7 +110,9 @@ def load_data(**kwargs):
         ("{'","'.join(company.keys())}") 
         VALUES ({', '.join(['%s'] * len(company))})'''
 
-        company_values = tuple(company[key] if isinstance(company[key],str) and company[key].isdecimal() else f"'{company[key]}'" for key in company.keys())
+        company_values = tuple(
+            company[key] if isinstance(company[key], str) and company[key].isdecimal() else f"'{company[key]}'" for key
+            in company.keys())
 
         vacancy = {
             "id": element['vacancy'].get('id'),
@@ -111,34 +138,41 @@ def load_data(**kwargs):
         vacancy_insert = f'''INSERT INTO "DC"."company" 
         ("{'","'.join(vacancy.keys())}") 
         VALUES ({', '.join(['%s'] * len(vacancy))})'''
-        vacancy_values = tuple(vacancy[key] if isinstance(vacancy[key],str) and vacancy[key].isdecimal() else f"'{vacancy[key]}'" for key in vacancy.keys())
+        vacancy_values = tuple(
+            vacancy[key] if isinstance(vacancy[key], str) and vacancy[key].isdecimal() else f"'{vacancy[key]}'" for key
+            in vacancy.keys())
 
-        pprint(company_insert,)
-        pprint(vacancy_insert,)
+    print('data_loaded')
+    # pprint(company_insert,)
+    # pprint(vacancy_insert,)
 
 
-if __name__== '__main__':
+def loader(**kwargs):
     resource = 'http://opendata.trudvsem.ru/api/v1/vacancies/region/7300000000000?'
-    data = list()
-
-    # # Данные для вставки
-    # user_data = [
-    #     {'id': 1, 'name': 'Alice', 'age': 30},
-    #     {'id': 2, 'name': 'Bob', 'age': 25},
-    #     {'id': 3, 'name': 'Charlie', 'age': 35}
-    # ]
-    #
-    # # Преобразуем список словарей в список кортежей
-    # data_to_insert = [tuple(user.values()) for user in user_data]
 
     try:
         number_of_sheets = requests.get(resource + 'limit=1').json()['meta']['total']
-        number_of_sheets = number_of_sheets//100 + 1
+        number_of_sheets = number_of_sheets // 100 + 1
     except Exception as e:
         print(e)
 
     for offset in range(number_of_sheets):
-        data = get_data(offset=offset)
+        data = get_data(offset=offset, resource=resource)
         # print(data[0]['vacancy']['id'])
-        dt = transform_data(data=data)
-        load_data(data=data)
+        data = transform_data(data=data)
+        load_t_data(data=data)
+
+
+with DAG(
+        'rabotaru',
+        schedule_interval='10 9 * * *',
+        start_date=days_ago(1),
+        catchup=False
+) as dag:
+    get_data_task = PythonOperator(
+        task_id='loader',
+        python_callable=loader,
+        provide_context=True,
+        do_xcom_push=True
+    )
+    get_data_task
