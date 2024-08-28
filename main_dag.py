@@ -1,3 +1,5 @@
+from pickle import FALSE
+
 import requests
 import re
 
@@ -6,7 +8,7 @@ from airflow import DAG
 from airflow.operators.python_operator import PythonOperator
 from airflow.hooks import PostgresHook
 from airflow.utils.dates import days_ago
-
+import  datetime
 
 def get_data(resource:str, offset:int, limit:int = 100)->dict:
     """
@@ -34,6 +36,8 @@ def transform_data(data:list)->dict:
             "values": список значений
         }
     """
+
+    today = datetime.datetime.today()
     company_data = {
         'on_conflict': 'inn',
         'column_name': ['inn', 'name', 'kpp', 'ogrn', 'site', 'email'],
@@ -54,7 +58,7 @@ def transform_data(data:list)->dict:
         'on_conflict': 'id',
         'column_name': ['id', 'source', 'inn_company', 'creation_date', "salary", "salary_min",
                         'salary_max', 'job_name', 'vac_url', 'employment', 'schedule', 'duty',
-                        'category', 'education', 'experience', 'work_places', 'address', 'lng', 'lat'
+                        'category', 'education', 'experience', 'work_places', 'address', 'lng', 'lat', 'today', 'status'
                         ],
         'values': [
             (
@@ -77,6 +81,8 @@ def transform_data(data:list)->dict:
                 element['vacancy']['addresses']['address'][0].get('location'),#нужно дописать парсер адресса, но не сейчас
                 element['vacancy']['addresses']['address'][0].get('lng'),
                 element['vacancy']['addresses']['address'][0].get('lat'),
+                today,
+                True
             )
             for element in data
         ]
@@ -92,14 +98,18 @@ def load_data(data:dict)->None:
     :param data: dict словарь с таблицами
     :return: None
     """
+    today = datetime.datetime.today()
+    three_days_ago = today - datetime.timedelta(days=3)
     pg_hook = PostgresHook(postgres_conn_id='ul_db')
     for table_name, table_data in data.items():
         for row in table_data['values']:
             if table_data["on_conflict"]:
-                sql = f'INSERT INTO "DC".{table_name} ({",".join(table_data["column_name"])}) VALUES ({",".join(["%s"] * len(row))}) ON CONFLICT ({table_data["on_conflict"]}) DO NOTHING'
+                sql = f'INSERT INTO "DC".{table_name} ({",".join(table_data["column_name"])}) VALUES ({",".join(["%s"] * len(row))}) ON CONFLICT ({table_data["on_conflict"]}) DO UPDATE SET "date"={today}'
             else:
                 sql = f'INSERT INTO "DC".{table_name} ({",".join(table_data["column_name"])}) VALUES ({",".join(["%s"] * len(row))})'
             pg_hook.run(sql, parameters=row)
+    sql_status_updater = f'UPDATE "DC".{table_name} SET status=%s WHERE date > %s'
+    pg_hook.run(sql_status_updater, parameters=[False, three_days_ago])
 
 
 def loader(**kwargs):

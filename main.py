@@ -82,7 +82,7 @@ def create_tables(conn: sqlite3.Connection) -> None:
     """
     Создаем таблицы в SQLite, если они не существуют.
 
-    :param conn: соединение с SQLite
+    :param conn: Соединение с SQLite
     :return: None
     """
     cursor = conn.cursor()
@@ -144,6 +144,7 @@ def load_data(data: dict, conn: sqlite3.Connection) -> None:
 
 
 def loader():
+
     resource = 'http://opendata.trudvsem.ru/api/v1/vacancies/region/7300000000000?'
 
     try:
