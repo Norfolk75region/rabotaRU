@@ -2,7 +2,10 @@ import requests
 import re
 import sqlite3
 
-def get_data(resource: str, offset: int, limit: int = 100) -> dict:
+def get_data(
+        resource: str,
+        offset: int,
+        limit: int = 100) -> dict:
     """
     Функция для получения данных с OpenData.
     Принимает адресс и условия смещения и ограничения
@@ -12,8 +15,22 @@ def get_data(resource: str, offset: int, limit: int = 100) -> dict:
     :param offset: смещение
     :return: dict значенией
     """
-    req = requests.get(f"{resource}limit={limit}&offset={offset}")
-    return req.json()['results']['vacancies']
+    link = f"{resource}limit={limit}&offset={offset}"
+    try:
+        req = requests.get(link)
+        req.raise_for_status()  # Проверяем, что запрос завершился успешно
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"Ошибка при выполнении запроса: {e}")
+
+    try:
+        data = req.json()
+        vacancies = data['results']['vacancies']
+    except KeyError:
+        raise Exception("Ошибка: в ответе отсутствуют ожидаемые ключи 'results' или 'vacancies'")
+    except ValueError:
+        raise Exception("Ошибка: ответ не является валидным JSON")
+
+    return vacancies
 
 
 def transform_data(data: list) -> dict:
@@ -33,7 +50,7 @@ def transform_data(data: list) -> dict:
         'column_name': ['inn', 'name', 'kpp', 'ogrn', 'site', 'email'],
         'values': [
             (
-                element['vacancy']['company'].get('inn'),  # используем get, что бы отловить ошибку в случае отсутсвия ключа
+                element['vacancy']['company'].get('inn'),  # используем get, что бы отловить ошибку в случае отсутствия ключа
                 element['vacancy']['company'].get('name'),
                 element['vacancy']['company'].get('kpp'),
                 element['vacancy']['company'].get('ogrn'),
@@ -157,6 +174,7 @@ def loader():
     conn = sqlite3.connect('database.db')
     create_tables(conn)
     for offset in range(number_of_sheets):
+        print(offset)
         data = get_data(offset=offset, resource=resource)
         transformed_data = transform_data(data)
         load_data(transformed_data, conn)
